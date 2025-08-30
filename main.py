@@ -1,4 +1,5 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
@@ -7,10 +8,34 @@ import string
 import re
 import os
 import warnings
+from datetime import datetime, timedelta
+from typing import Optional
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
 # TensorFlow uyarılarını bastır
 warnings.filterwarnings('ignore', category=UserWarning)
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+# JWT ayarları
+SECRET_KEY = "gyk-ai-app-secret-key-2024-example"
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+# In-memory kullanıcı veritabanı
+fake_users_db = {
+    "testuser": {
+        "username": "testuser",
+        "full_name": "Test User",
+        "email": "test@example.com",
+        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",  # secret
+        "disabled": False,
+    }
+}
 
 # FastAPI uygulamasını oluştur
 app = FastAPI(
@@ -54,6 +79,27 @@ class SMSResponse(BaseModel):
             }
         }
 
+# Authentication modelleri
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+
+class User(BaseModel):
+    username: str
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    disabled: Optional[bool] = None
+
+class UserInDB(User):
+    hashed_password: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
 def load_models():
     """Model ve tokenizer'ı yükle"""
     global model, tokenizer
@@ -87,6 +133,67 @@ def load_models():
     except Exception as e:
         print(f"Tokenizer yükleme hatası: {e}")
         raise e
+
+# Authentication fonksiyonları
+def verify_password(plain_password, hashed_password):
+    """Şifreyi doğrula"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    """Şifreyi hash'le"""
+    return pwd_context.hash(password)
+
+def get_user(db, username: str):
+    """Kullanıcıyı getir"""
+    if username in db:
+        user_dict = db[username]
+        return UserInDB(**user_dict)
+
+def authenticate_user(fake_db, username: str, password: str):
+    """Kullanıcıyı doğrula"""
+    user = get_user(fake_db, username)
+    if not user:
+        return False
+    if not verify_password(password, user.hashed_password):
+        return False
+    return user
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    """Access token oluştur"""
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Mevcut kullanıcıyı getir"""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Token doğrulanamadı",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        token_data = TokenData(username=username)
+    except JWTError:
+        raise credentials_exception
+    user = get_user(fake_users_db, username=token_data.username)
+    if user is None:
+        raise credentials_exception
+    return user
+
+async def get_current_active_user(current_user: User = Depends(get_current_user)):
+    """Aktif kullanıcıyı getir"""
+    if current_user.disabled:
+        raise HTTPException(status_code=400, detail="İnaktif kullanıcı")
+    return current_user
 
 def clean_text(text):
     """Metni temizle"""
@@ -137,16 +244,40 @@ async def startup_event():
         # Uygulamayı durdurmak yerine sadece uyarı ver
         print("Uyarı: Model yüklenemedi. API çalışmaya devam edecek ancak tahmin endpoint'leri çalışmayacak.")
 
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: UserLogin):
+    """Kullanıcı girişi ve token oluşturma"""
+    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Yanlış kullanıcı adı veya şifre",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
 @app.get("/")
 async def root():
     """Ana sayfa"""
     return {
         "message": "SMS Spam Sınıflandırma API'sine Hoş Geldiniz!",
         "endpoints": {
-            "/predict": "POST - SMS mesajını sınıflandır",
-            "/health": "GET - API sağlık durumu"
+            "/token": "POST - Kullanıcı girişi (username: testuser, password: secret)",
+            "/predict": "POST - SMS mesajını sınıflandır (JWT gerekli)",
+            "/predict/batch": "POST - Toplu SMS sınıflandırma (JWT gerekli)",
+            "/health": "GET - API sağlık durumu",
+            "/users/me": "GET - Kullanıcı bilgileri (JWT gerekli)"
         }
     }
+
+@app.get("/users/me", response_model=User)
+async def read_users_me(current_user: User = Depends(get_current_active_user)):
+    """Mevcut kullanıcı bilgilerini getir"""
+    return current_user
 
 @app.get("/health")
 async def health_check():
@@ -158,8 +289,8 @@ async def health_check():
     }
 
 @app.post("/predict", response_model=SMSResponse)
-async def predict_endpoint(request: SMSRequest):
-    """SMS mesajını sınıflandır"""
+async def predict_endpoint(request: SMSRequest, current_user: User = Depends(get_current_active_user)):
+    """SMS mesajını sınıflandır (JWT gerekli)"""
     try:
         result = predict_sms(request.message)
         return SMSResponse(**result)
@@ -167,8 +298,8 @@ async def predict_endpoint(request: SMSRequest):
         raise HTTPException(status_code=500, detail=f"Tahmin hatası: {str(e)}")
 
 @app.post("/predict/batch")
-async def predict_batch(messages: list[str]):
-    """Birden fazla SMS mesajını toplu olarak sınıflandır"""
+async def predict_batch(messages: list[str], current_user: User = Depends(get_current_active_user)):
+    """Birden fazla SMS mesajını toplu olarak sınıflandır (JWT gerekli)"""
     try:
         results = []
         for message in messages:
