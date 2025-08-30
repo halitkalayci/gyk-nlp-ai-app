@@ -1,13 +1,14 @@
-# JWT Authentication Sistemi
+# JWT Authentication Sistemi (PostgreSQL)
 
-Bu proje artık JWT (JSON Web Token) authentication sistemi ile korunmaktadır.
+Bu proje artık JWT (JSON Web Token) authentication sistemi ve PostgreSQL veritabanı ile korunmaktadır.
 
 ## 🔐 Authentication Özellikleri
 
 - **JWT Token Authentication**: Güvenli token tabanlı kimlik doğrulama
-- **In-memory User Database**: Test amaçlı bellek içi kullanıcı veritabanı
+- **PostgreSQL Database**: Kullanıcı bilgileri PostgreSQL veritabanında saklanır
 - **Password Hashing**: bcrypt ile güvenli şifre hashleme
 - **Protected Endpoints**: Predict endpoint'leri JWT koruması altında
+- **SQLAlchemy ORM**: Veritabanı işlemleri için modern ORM
 
 ## 👤 Test Kullanıcısı
 
@@ -22,12 +23,23 @@ Bu proje artık JWT (JSON Web Token) authentication sistemi ile korunmaktadır.
 
 ## 🚀 Kurulum
 
-1. Gerekli kütüphaneleri yükleyin:
+### 1. PostgreSQL Docker Container'ı Başlatın
+
+```bash
+docker run --name nlp-postgre -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=abc123 -e POSTGRES_DB=mydb -p 5434:5432 -v nlpdata:/var/lib/postgresql/data -d postgres:16
+```
+
+### 2. Gerekli kütüphaneleri yükleyin:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Uygulamayı çalıştırın:
+### 3. Veritabanını kurun:
+```bash
+python setup_database.py
+```
+
+### 4. Uygulamayı çalıştırın:
 ```bash
 python main.py
 ```
@@ -37,12 +49,37 @@ python main.py
 ### 🔓 Açık Endpoint'ler (JWT gerektirmez)
 - `GET /` - Ana sayfa ve endpoint listesi
 - `GET /health` - API sağlık durumu
+- `POST /register` - Yeni kullanıcı kaydı
 - `POST /token` - Kullanıcı girişi ve JWT token alma
 
 ### 🔒 Korumalı Endpoint'ler (JWT gerektirir)
 - `POST /predict` - SMS spam sınıflandırma
 - `POST /predict/batch` - Toplu SMS sınıflandırma  
 - `GET /users/me` - Kullanıcı bilgileri
+
+## 📝 Kullanıcı Kaydı
+
+```bash
+curl -X POST "http://localhost:8000/register" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "yenikullanici",
+    "email": "yeni@example.com",
+    "full_name": "Yeni Kullanıcı",
+    "password": "güçlüşifre123"
+  }'
+```
+
+Yanıt:
+```json
+{
+  "id": 2,
+  "username": "yenikullanici",
+  "email": "yeni@example.com", 
+  "full_name": "Yeni Kullanıcı",
+  "message": "Kullanıcı başarıyla kaydedildi!"
+}
+```
 
 ## 🔑 JWT Token Alma
 
@@ -100,12 +137,36 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 ```
 
+## 🗄️ Veritabanı Bilgileri
+
+**PostgreSQL Bağlantı Ayarları:**
+- Host: localhost
+- Port: 5434
+- Database: mydb
+- Username: postgres
+- Password: abc123
+
+**Kullanıcı Tablosu Şeması:**
+```sql
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR UNIQUE NOT NULL,
+    email VARCHAR UNIQUE NOT NULL,
+    full_name VARCHAR NOT NULL,
+    hashed_password VARCHAR NOT NULL,
+    disabled BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE
+);
+```
+
 ## 🔒 Güvenlik Notları
 
 1. **SECRET_KEY**: Üretim ortamında mutlaka değiştirin ve güvenli tutun
 2. **HTTPS**: Üretimde mutlaka HTTPS kullanın
 3. **Token Süresi**: Güvenlik ihtiyaçlarınıza göre ayarlayın
 4. **Password Policy**: Güçlü şifre politikaları uygulayın
+5. **Database Security**: Üretimde güçlü veritabanı şifreleri kullanın
 
 ## 🎯 Kullanım Senaryosu
 
@@ -114,9 +175,56 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 3. **API Kullan**: Token'ı Authorization header'ında Bearer token olarak gönderin
 4. **SMS Analiz**: Artık `/predict` endpoint'lerini güvenle kullanabilirsiniz
 
+## 🛠️ Veritabanı Yönetimi
+
+### Alembic ile Migration
+```bash
+# İlk migration oluştur
+alembic revision --autogenerate -m "Initial migration"
+
+# Migration'ları uygula
+alembic upgrade head
+```
+
+### Manuel Veritabanı Bağlantısı
+```bash
+# PostgreSQL CLI ile bağlan
+psql -h localhost -p 5434 -U postgres -d mydb
+```
+
 ## 📊 Swagger UI
 
 API dokümantasyonunu görüntülemek için:
 - http://localhost:8000/docs
 
 Burada JWT authentication ile korumalı endpoint'leri test edebilirsiniz.
+
+## 🧪 Test Etme
+
+### Otomatik Test
+```bash
+python test_jwt.py
+```
+
+### Manuel Test
+```bash
+# 1. Yeni kullanıcı kaydı
+curl -X POST "http://localhost:8000/register" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "testuser3", "email": "test3@example.com", "full_name": "Test User 3", "password": "mypassword"}'
+
+# 2. Token al
+curl -X POST "http://localhost:8000/token" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "testuser3", "password": "mypassword"}'
+
+# 3. Kullanıcı bilgilerini getir
+curl -X GET "http://localhost:8000/users/me" \
+  -H "Authorization: Bearer YOUR_TOKEN"
+
+# 4. SMS predict et
+curl -X POST "http://localhost:8000/predict" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Free iPhone! Click now!"}'
+```

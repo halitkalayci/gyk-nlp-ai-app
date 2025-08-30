@@ -12,6 +12,10 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.sql import func
 
 # TensorFlow uyarılarını bastır
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -22,20 +26,17 @@ SECRET_KEY = "gyk-ai-app-secret-key-2024-example"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
+# Database ayarları
+DATABASE_URL = "postgresql://postgres:abc123@localhost:5434/mydb"
+
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 security = HTTPBearer()
 
-# In-memory kullanıcı veritabanı
-fake_users_db = {
-    "testuser": {
-        "username": "testuser",
-        "full_name": "Test User",
-        "email": "test@example.com",
-        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",  # secret
-        "disabled": False,
-    }
-}
+# SQLAlchemy setup
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
 # FastAPI uygulamasını oluştur
 app = FastAPI(
@@ -51,6 +52,14 @@ TOKENIZER_PATH = "model/tokenizer.pkl"
 # Global değişkenler
 model = None
 tokenizer = None
+
+# Database dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # Pydantic modeli - API istekleri için (v1 syntax)
 class SMSRequest(BaseModel):
@@ -100,6 +109,53 @@ class UserLogin(BaseModel):
     username: str
     password: str
 
+class UserRegister(BaseModel):
+    username: str
+    email: str
+    full_name: str
+    password: str
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "username": "newuser",
+                "email": "newuser@example.com",
+                "full_name": "New User",
+                "password": "strongpassword123"
+            }
+        }
+
+class UserRegisterResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    full_name: str
+    message: str
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "id": 1,
+                "username": "newuser",
+                "email": "newuser@example.com",
+                "full_name": "New User",
+                "message": "Kullanıcı başarıyla kaydedildi!"
+            }
+        }
+
+# SQLAlchemy User modeli
+class UserDB(Base):
+    __tablename__ = "users"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    full_name = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    disabled = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 def load_models():
     """Model ve tokenizer'ı yükle"""
     global model, tokenizer
@@ -143,15 +199,31 @@ def get_password_hash(password):
     """Şifreyi hash'le"""
     return pwd_context.hash(password)
 
-def get_user(db, username: str):
-    """Kullanıcıyı getir"""
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
+def get_user(db: Session, username: str):
+    """Kullanıcıyı veritabanından getir"""
+    return db.query(UserDB).filter(UserDB.username == username).first()
 
-def authenticate_user(fake_db, username: str, password: str):
+def get_user_by_email(db: Session, email: str):
+    """Email ile kullanıcıyı getir"""
+    return db.query(UserDB).filter(UserDB.email == email).first()
+
+def create_user(db: Session, username: str, email: str, full_name: str, password: str):
+    """Yeni kullanıcı oluştur"""
+    hashed_password = get_password_hash(password)
+    db_user = UserDB(
+        username=username,
+        email=email,
+        full_name=full_name,
+        hashed_password=hashed_password
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+def authenticate_user(db: Session, username: str, password: str):
     """Kullanıcıyı doğrula"""
-    user = get_user(fake_db, username)
+    user = get_user(db, username)
     if not user:
         return False
     if not verify_password(password, user.hashed_password):
@@ -169,7 +241,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
     """Mevcut kullanıcıyı getir"""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -184,12 +256,12 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         token_data = TokenData(username=username)
     except JWTError:
         raise credentials_exception
-    user = get_user(fake_users_db, username=token_data.username)
+    user = get_user(db, username=token_data.username)
     if user is None:
         raise credentials_exception
     return user
 
-async def get_current_active_user(current_user: User = Depends(get_current_user)):
+async def get_current_active_user(current_user: UserDB = Depends(get_current_user)):
     """Aktif kullanıcıyı getir"""
     if current_user.disabled:
         raise HTTPException(status_code=400, detail="İnaktif kullanıcı")
@@ -233,21 +305,105 @@ def predict_sms(message: str) -> dict:
         print(f"Tahmin hatası: {e}")
         raise HTTPException(status_code=500, detail=f"Tahmin işlemi başarısız: {str(e)}")
 
+def init_db():
+    """Veritabanını başlat ve tabloları oluştur"""
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("Veritabanı tabloları başarıyla oluşturuldu!")
+        
+        # İlk kullanıcıyı oluştur
+        db = SessionLocal()
+        try:
+            # Kullanıcı zaten var mı kontrol et
+            existing_user = get_user(db, "testuser")
+            if not existing_user:
+                create_user(
+                    db=db,
+                    username="testuser",
+                    email="test@example.com",
+                    full_name="Test User",
+                    password="secret"
+                )
+                print("Test kullanıcısı başarıyla oluşturuldu!")
+            else:
+                print("Test kullanıcısı zaten mevcut.")
+        finally:
+            db.close()
+            
+    except Exception as e:
+        print(f"Veritabanı başlatma hatası: {e}")
+        raise e
+
 @app.on_event("startup")
 async def startup_event():
-    """Uygulama başlatılırken model ve tokenizer'ı yükle"""
+    """Uygulama başlatılırken model, tokenizer ve veritabanını yükle"""
     try:
+        # Veritabanını başlat
+        init_db()
+        
+        # Model ve tokenizer'ı yükle
         load_models()
         print("Model ve tokenizer başarıyla yüklendi!")
     except Exception as e:
-        print(f"Model yükleme hatası: {e}")
+        print(f"Başlatma hatası: {e}")
         # Uygulamayı durdurmak yerine sadece uyarı ver
-        print("Uyarı: Model yüklenemedi. API çalışmaya devam edecek ancak tahmin endpoint'leri çalışmayacak.")
+        print("Uyarı: Başlatma sırasında hata oluştu. Bazı özellikler çalışmayabilir.")
+
+@app.post("/register", response_model=UserRegisterResponse)
+async def register_user(user_data: UserRegister, db: Session = Depends(get_db)):
+    """Yeni kullanıcı kaydı"""
+    # Kullanıcı adı kontrolü
+    existing_user = get_user(db, user_data.username)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bu kullanıcı adı zaten kullanılıyor"
+        )
+    
+    # Email kontrolü
+    existing_email = get_user_by_email(db, user_data.email)
+    if existing_email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bu email adresi zaten kullanılıyor"
+        )
+    
+    # Şifre uzunluk kontrolü
+    if len(user_data.password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Şifre en az 6 karakter olmalıdır"
+        )
+    
+    try:
+        # Yeni kullanıcı oluştur
+        new_user = create_user(
+            db=db,
+            username=user_data.username,
+            email=user_data.email,
+            full_name=user_data.full_name,
+            password=user_data.password
+        )
+        
+        return UserRegisterResponse(
+            id=new_user.id,
+            username=new_user.username,
+            email=new_user.email,
+            full_name=new_user.full_name,
+            message="Kullanıcı başarıyla kaydedildi!"
+        )
+        
+    except Exception as e:
+        print(f"Kullanıcı kaydetme hatası: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Kullanıcı kaydedilirken bir hata oluştu"
+        )
 
 @app.post("/token", response_model=Token)
-async def login_for_access_token(form_data: UserLogin):
+async def login_for_access_token(form_data: UserLogin, db: Session = Depends(get_db)):
     """Kullanıcı girişi ve token oluşturma"""
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
+    user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -266,18 +422,30 @@ async def root():
     return {
         "message": "SMS Spam Sınıflandırma API'sine Hoş Geldiniz!",
         "endpoints": {
+            "/register": "POST - Yeni kullanıcı kaydı",
             "/token": "POST - Kullanıcı girişi (username: testuser, password: secret)",
             "/predict": "POST - SMS mesajını sınıflandır (JWT gerekli)",
             "/predict/batch": "POST - Toplu SMS sınıflandırma (JWT gerekli)",
             "/health": "GET - API sağlık durumu",
             "/users/me": "GET - Kullanıcı bilgileri (JWT gerekli)"
+        },
+        "example_registration": {
+            "username": "yenikullanici",
+            "email": "yeni@example.com",
+            "full_name": "Yeni Kullanıcı",
+            "password": "güçlüşifre123"
         }
     }
 
 @app.get("/users/me", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_active_user)):
+async def read_users_me(current_user: UserDB = Depends(get_current_active_user)):
     """Mevcut kullanıcı bilgilerini getir"""
-    return current_user
+    return User(
+        username=current_user.username,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        disabled=current_user.disabled
+    )
 
 @app.get("/health")
 async def health_check():
@@ -289,7 +457,7 @@ async def health_check():
     }
 
 @app.post("/predict", response_model=SMSResponse)
-async def predict_endpoint(request: SMSRequest, current_user: User = Depends(get_current_active_user)):
+async def predict_endpoint(request: SMSRequest, current_user: UserDB = Depends(get_current_active_user)):
     """SMS mesajını sınıflandır (JWT gerekli)"""
     try:
         result = predict_sms(request.message)
@@ -298,7 +466,7 @@ async def predict_endpoint(request: SMSRequest, current_user: User = Depends(get
         raise HTTPException(status_code=500, detail=f"Tahmin hatası: {str(e)}")
 
 @app.post("/predict/batch")
-async def predict_batch(messages: list[str], current_user: User = Depends(get_current_active_user)):
+async def predict_batch(messages: list[str], current_user: UserDB = Depends(get_current_active_user)):
     """Birden fazla SMS mesajını toplu olarak sınıflandır (JWT gerekli)"""
     try:
         results = []
