@@ -11,8 +11,8 @@ from sqlalchemy.exc import OperationalError
 import time
 
 # Database ayarları
-DATABASE_URL = "postgresql://postgres:abc123@localhost:5434/mydb"
-ADMIN_URL = "postgresql://postgres:abc123@localhost:5434/postgres"  # Admin bağlantısı
+DATABASE_URL = "postgresql://postgres:abc123@localhost:5433/mydb"
+ADMIN_URL = "postgresql://postgres:abc123@localhost:5433/postgres"  # Admin bağlantısı
 
 def wait_for_postgres(max_retries=30, delay=2):
     """PostgreSQL'in hazır olmasını bekle"""

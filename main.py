@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing.sequence import pad_sequences
@@ -27,7 +28,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Database ayarları
-DATABASE_URL = "postgresql://postgres:abc123@localhost:5434/mydb"
+DATABASE_URL = "postgresql://postgres:abc123@localhost:5433/mydb"
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -43,6 +44,15 @@ app = FastAPI(
     title="SMS Spam Sınıflandırma API",
     description="SMS mesajlarını spam veya ham olarak sınıflandıran API",
     version="1.0.0"
+)
+
+# CORS ayarları
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Model ve tokenizer yolları
