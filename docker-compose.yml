@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: sms-spam-db
+    environment:
+      POSTGRES_DB: sms_spam_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # SMS Spam API Application
+  app:
+    build: .
+    container_name: sms-spam-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres123@postgres:5432/sms_spam_db
+      SECRET_KEY: gyk-ai-app-docker-secret-key-2024
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      MODEL_PATH: model/sms_model.h5
+      TOKENIZER_PATH: model/tokenizer.pkl
+      TF_CPP_MIN_LOG_LEVEL: 2
+      DEFAULT_USER_USERNAME: admin
+      DEFAULT_USER_EMAIL: admin@example.com
+      DEFAULT_USER_FULLNAME: Administrator
+      DEFAULT_USER_PASSWORD: admin123
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./model:/app/model:ro  # Model dosyalarını read-only olarak mount et
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local

@@ -1,8 +1,9 @@
 import requests
 import json
+import os
 
 # API base URL
-BASE_URL = "http://localhost:8000"
+BASE_URL = os.getenv('API_BASE_URL', 'http://localhost:8000')
 
 def test_health():
     """Sağlık kontrolü testi"""

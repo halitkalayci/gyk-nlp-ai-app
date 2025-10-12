@@ -19,15 +19,15 @@ from sqlalchemy.sql import func
 
 # TensorFlow uyarılarını bastır
 warnings.filterwarnings('ignore', category=UserWarning)
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = os.getenv('TF_CPP_MIN_LOG_LEVEL', '2')
 
 # JWT ayarları
-SECRET_KEY = "gyk-ai-app-secret-key-2024-example"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+SECRET_KEY = os.getenv('SECRET_KEY', 'gyk-ai-app-secret-key-2024-example')
+ALGORITHM = os.getenv('ALGORITHM', 'HS256')
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv('ACCESS_TOKEN_EXPIRE_MINUTES', '30'))
 
 # Database ayarları
-DATABASE_URL = "postgresql://postgres:abc123@localhost:5434/mydb"
+DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:abc123@localhost:5434/mydb')
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -46,8 +46,8 @@ app = FastAPI(
 )
 
 # Model ve tokenizer yolları
-MODEL_PATH = "model/sms_model.h5"
-TOKENIZER_PATH = "model/tokenizer.pkl"
+MODEL_PATH = os.getenv('MODEL_PATH', 'model/sms_model.h5')
+TOKENIZER_PATH = os.getenv('TOKENIZER_PATH', 'model/tokenizer.pkl')
 
 # Global değişkenler
 model = None
@@ -315,14 +315,15 @@ def init_db():
         db = SessionLocal()
         try:
             # Kullanıcı zaten var mı kontrol et
-            existing_user = get_user(db, "testuser")
+            default_username = os.getenv('DEFAULT_USER_USERNAME', 'testuser')
+            existing_user = get_user(db, default_username)
             if not existing_user:
                 create_user(
                     db=db,
-                    username="testuser",
-                    email="test@example.com",
-                    full_name="Test User",
-                    password="secret"
+                    username=default_username,
+                    email=os.getenv('DEFAULT_USER_EMAIL', 'test@example.com'),
+                    full_name=os.getenv('DEFAULT_USER_FULLNAME', 'Test User'),
+                    password=os.getenv('DEFAULT_USER_PASSWORD', 'secret')
                 )
                 print("Test kullanıcısı başarıyla oluşturuldu!")
             else:
@@ -479,4 +480,6 @@ async def predict_batch(messages: list[str], current_user: UserDB = Depends(get_
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    host = os.getenv('APP_HOST', '0.0.0.0')
+    port = int(os.getenv('APP_PORT', '8000'))
+    uvicorn.run(app, host=host, port=port)
